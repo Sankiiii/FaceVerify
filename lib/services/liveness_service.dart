@@ -80,6 +80,8 @@ class LivenessStepResult {
   final bool isChallengePassed;
   final bool isSessionComplete;
   final String? warning;
+  final bool isFaceOutsideOval;
+  final bool isFaceTrackingChanged;
 
   LivenessStepResult({
     required this.title,
@@ -89,6 +91,8 @@ class LivenessStepResult {
     required this.isChallengePassed,
     required this.isSessionComplete,
     this.warning,
+    this.isFaceOutsideOval = false,
+    this.isFaceTrackingChanged = false,
   });
 }
 
@@ -147,9 +151,14 @@ class LivenessService {
     _blinkDetectedClosed = false;
   }
 
-  LivenessStepResult evaluateFrame(List<Face> faces) {
+  LivenessStepResult evaluateFrame({
+    required List<Face> faces,
+    int imageWidth = 0,
+    int imageHeight = 0,
+  }) {
     final current = currentChallenge;
 
+    // 1. Check if face is detected
     if (faces.isEmpty) {
       _stableFrames = 0;
       return LivenessStepResult(
@@ -159,10 +168,11 @@ class LivenessService {
         currentStepProgress: 0.0,
         isChallengePassed: false,
         isSessionComplete: false,
-        warning: 'Face not detected',
+        warning: 'Face not detected! Look directly at camera',
       );
     }
 
+    // 2. Check for multiple faces
     if (faces.length > 1) {
       _stableFrames = 0;
       return LivenessStepResult(
@@ -172,13 +182,73 @@ class LivenessService {
         currentStepProgress: 0.0,
         isChallengePassed: false,
         isSessionComplete: false,
-        warning: 'Multiple faces detected',
+        warning: 'Multiple faces detected! Only 1 person allowed',
       );
     }
 
     final face = faces.first;
 
-    // Continuous tracking validation
+    // 3. Strict Oval & Distance Verification
+    if (imageWidth > 0 && imageHeight > 0) {
+      final portraitW = min(imageWidth, imageHeight).toDouble();
+      final portraitH = max(imageWidth, imageHeight).toDouble();
+
+      final box = face.boundingBox;
+      final centerX = box.center.dx / portraitW;
+      final centerY = box.center.dy / portraitH;
+      final faceW = box.width / portraitW;
+      final faceH = box.height / portraitH;
+
+      // Distance: Too far
+      if (faceH < 0.20 || faceW < 0.20) {
+        _stableFrames = 0;
+        return LivenessStepResult(
+          title: 'Move Closer',
+          instruction: 'Your face is too far from camera. Move closer to the oval.',
+          icon: Icons.zoom_in,
+          currentStepProgress: 0.0,
+          isChallengePassed: false,
+          isSessionComplete: false,
+          warning: 'Too far! Move closer to camera',
+          isFaceOutsideOval: true,
+        );
+      }
+
+      // Distance: Too close
+      if (faceH > 0.78 || faceW > 0.78) {
+        _stableFrames = 0;
+        return LivenessStepResult(
+          title: 'Move Back',
+          instruction: 'Your face is too close to camera. Move back slightly.',
+          icon: Icons.zoom_out,
+          currentStepProgress: 0.0,
+          isChallengePassed: false,
+          isSessionComplete: false,
+          warning: 'Too close! Move back slightly',
+          isFaceOutsideOval: true,
+        );
+      }
+
+      // Horizontal & Vertical Oval Boundaries
+      final bool isHorizontalCentered = (centerX - 0.50).abs() < 0.22;
+      final bool isVerticalCentered = (centerY - 0.40).abs() < 0.22;
+
+      if (!isHorizontalCentered || !isVerticalCentered) {
+        _stableFrames = 0;
+        return LivenessStepResult(
+          title: 'Fit Face in Oval',
+          instruction: 'Your face is outside the oval! Align inside the oval guide.',
+          icon: Icons.center_focus_weak,
+          currentStepProgress: 0.0,
+          isChallengePassed: false,
+          isSessionComplete: false,
+          warning: 'Face outside oval! Center your face',
+          isFaceOutsideOval: true,
+        );
+      }
+    }
+
+    // 4. Continuous tracking identity validation (Prevents face swapping)
     if (face.trackingId != null) {
       if (_lockedTrackingId == null) {
         _lockedTrackingId = face.trackingId;
@@ -186,16 +256,18 @@ class LivenessService {
         _stableFrames = 0;
         return LivenessStepResult(
           title: 'Face Changed',
-          instruction: 'Please stay in front of the camera',
-          icon: Icons.warning_amber_rounded,
+          instruction: 'Face tracking changed! Tap Reset in the top-right corner to restart.',
+          icon: Icons.person_off,
           currentStepProgress: 0.0,
           isChallengePassed: false,
           isSessionComplete: false,
-          warning: 'Face tracking swapped',
+          warning: 'Face changed! Tap Refresh icon to restart',
+          isFaceTrackingChanged: true,
         );
       }
     }
 
+    // 5. Evaluate Liveness Condition ONLY if face is properly inside oval
     final double yaw = face.headEulerAngleY ?? 0.0;
     final double pitch = face.headEulerAngleX ?? 0.0;
     final double? leftEye = face.leftEyeOpenProbability;

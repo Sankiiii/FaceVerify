@@ -38,6 +38,7 @@ class _VerificationScreenState extends State<VerificationScreen> {
   bool _isVerifying = false;
   bool _sessionComplete = false;
   bool _isInStepTransition = false;
+  bool _isFaceTrackingChanged = false;
 
   // UI state
   String _challengeTitle = 'Look Straight Ahead';
@@ -95,6 +96,8 @@ class _VerificationScreenState extends State<VerificationScreen> {
       setState(() {
         _challengeTitle = 'Camera Error';
         _challengeInstruction = 'Failed to start camera: $e';
+        _warning = 'Camera initialization failed';
+        _borderColor = Colors.redAccent;
       });
     }
   }
@@ -106,6 +109,7 @@ class _VerificationScreenState extends State<VerificationScreen> {
     _isStreaming = true;
     _sessionComplete = false;
     _isInStepTransition = false;
+    _isFaceTrackingChanged = false;
 
     // Initialize UI with first challenge
     final current = _livenessService.currentChallenge;
@@ -116,10 +120,12 @@ class _VerificationScreenState extends State<VerificationScreen> {
       _stepProgress = 0.0;
       _borderColor = Colors.cyanAccent;
       _warning = null;
+      _isFaceTrackingChanged = false;
     });
 
-    _controller!.startImageStream((CameraImage image) async {
-      // 1. Throttle frame rate: process 1 frame every 130ms (prevents UI flicker & CPU load)
+    if (!_controller!.value.isStreamingImages) {
+      _controller!.startImageStream((CameraImage image) async {
+        // 1. Throttle frame rate: process 1 frame every 130ms (prevents UI flicker & CPU load)
       final now = DateTime.now();
       if (now.difference(_lastFrameProcessedTime).inMilliseconds < 130) {
         return;
@@ -139,7 +145,12 @@ class _VerificationScreenState extends State<VerificationScreen> {
 
       if (!mounted || !_isStreaming || _isInStepTransition) return;
 
-      final result = _livenessService.evaluateFrame(faces);
+      // 2. Strict evaluation with oval containment and distance checks
+      final result = _livenessService.evaluateFrame(
+        faces: faces,
+        imageWidth: image.width,
+        imageHeight: image.height,
+      );
 
       if (result.isChallengePassed) {
         // Step Passed! Pause frame evaluation and show clear celebration banner
@@ -151,10 +162,19 @@ class _VerificationScreenState extends State<VerificationScreen> {
           _challengeIcon = result.icon;
           _stepProgress = result.currentStepProgress;
           _warning = result.warning;
-          _borderColor = result.warning != null ? Colors.orangeAccent : Colors.cyanAccent;
+          _isFaceTrackingChanged = result.isFaceTrackingChanged;
+
+          if (result.isFaceOutsideOval || result.isFaceTrackingChanged) {
+            _borderColor = Colors.redAccent;
+          } else if (result.warning != null) {
+            _borderColor = Colors.orangeAccent;
+          } else {
+            _borderColor = Colors.cyanAccent;
+          }
         });
       }
     });
+    }
   }
 
   Future<void> _onStepCompleted(LivenessStepResult result) async {
@@ -168,6 +188,7 @@ class _VerificationScreenState extends State<VerificationScreen> {
       _stepProgress = 1.0;
       _borderColor = Colors.greenAccent;
       _warning = null;
+      _isFaceTrackingChanged = false;
     });
 
     if (result.isSessionComplete) {
@@ -220,7 +241,7 @@ class _VerificationScreenState extends State<VerificationScreen> {
         _showResultSheet(
           isPassed: false,
           similarity: 0.0,
-          reason: 'No face detected in capture frame.',
+          reason: 'No face detected in capture frame. Please ensure proper lighting and face centered.',
         );
         return;
       }
@@ -581,6 +602,22 @@ class _VerificationScreenState extends State<VerificationScreen> {
   }
 
   void _resetAndRetry() {
+    _livenessService.startNewSession();
+    final current = _livenessService.currentChallenge;
+
+    setState(() {
+      _sessionComplete = false;
+      _isVerifying = false;
+      _isInStepTransition = false;
+      _isFaceTrackingChanged = false;
+      _warning = null;
+      _stepProgress = 0.0;
+      _borderColor = Colors.cyanAccent;
+      _challengeTitle = current.title;
+      _challengeInstruction = current.instruction;
+      _challengeIcon = current.icon;
+    });
+
     final frontCamera = widget.cameras.firstWhere(
       (c) => c.lensDirection == CameraLensDirection.front,
       orElse: () => widget.cameras.first,
@@ -617,6 +654,14 @@ class _VerificationScreenState extends State<VerificationScreen> {
         title: const Text('Live Face Verification'),
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
+        actions: [
+          // Top-Right Reset / Refresh button so user can restart anytime
+          IconButton(
+            icon: const Icon(Icons.refresh_rounded, color: Colors.cyanAccent, size: 26),
+            tooltip: 'Reset & Restart Verification',
+            onPressed: _isVerifying ? null : _resetAndRetry,
+          ),
+        ],
       ),
       body: Stack(
         fit: StackFit.expand,
@@ -683,12 +728,18 @@ class _VerificationScreenState extends State<VerificationScreen> {
                         ),
                       ),
                       if (_warning != null)
-                        Text(
-                          _warning!,
-                          style: const TextStyle(
-                            color: Colors.orangeAccent,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
+                        Flexible(
+                          child: Text(
+                            _warning!,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: _borderColor == Colors.redAccent
+                                  ? Colors.redAccent
+                                  : Colors.orangeAccent,
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                            ),
                           ),
                         ),
                     ],
@@ -722,9 +773,14 @@ class _VerificationScreenState extends State<VerificationScreen> {
                   Text(
                     _challengeInstruction,
                     textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      color: Colors.white70,
+                    style: TextStyle(
+                      color: _borderColor == Colors.redAccent
+                          ? Colors.redAccent
+                          : Colors.white70,
                       fontSize: 13,
+                      fontWeight: _borderColor == Colors.redAccent
+                          ? FontWeight.bold
+                          : FontWeight.normal,
                     ),
                   ),
 
@@ -745,7 +801,55 @@ class _VerificationScreenState extends State<VerificationScreen> {
             ),
           ),
 
-          // 4. Verification Overlay
+          // 4. On-Screen Quick Restart Banner (if face tracking changed)
+          if (_isFaceTrackingChanged)
+            Positioned(
+              bottom: 30,
+              left: 20,
+              right: 20,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF2C1014).withValues(alpha: 0.95),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.redAccent, width: 1.5),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.5),
+                      blurRadius: 10,
+                    ),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.person_off, color: Colors.redAccent, size: 26),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Text(
+                        'Face changed mid-session!',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.redAccent,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      ),
+                      onPressed: _resetAndRetry,
+                      icon: const Icon(Icons.refresh, size: 16),
+                      label: const Text('Restart'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+          // 5. Verification Overlay
           if (_isVerifying)
             Container(
               color: Colors.black.withValues(alpha: 0.7),
