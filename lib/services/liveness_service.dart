@@ -26,16 +26,31 @@ extension LivenessChallengeExtension on LivenessChallenge {
     }
   }
 
+  String get shortLabel {
+    switch (this) {
+      case LivenessChallenge.centerFace:
+        return 'Center';
+      case LivenessChallenge.turnHeadLeft:
+        return 'Turn Left';
+      case LivenessChallenge.turnHeadRight:
+        return 'Turn Right';
+      case LivenessChallenge.lookUp:
+        return 'Tilt Up';
+      case LivenessChallenge.blink:
+        return 'Blink';
+    }
+  }
+
   String get instruction {
     switch (this) {
       case LivenessChallenge.centerFace:
-        return 'Hold your face inside the oval and look at the camera';
+        return 'Hold your face inside the oval and look directly at camera';
       case LivenessChallenge.turnHeadLeft:
         return 'Turn your head slowly towards your left shoulder';
       case LivenessChallenge.turnHeadRight:
         return 'Turn your head slowly towards your right shoulder';
       case LivenessChallenge.lookUp:
-        return 'Tilt your head slightly upwards';
+        return 'Tilt your chin slightly upwards';
       case LivenessChallenge.blink:
         return 'Close both eyes and open them naturally';
     }
@@ -81,7 +96,7 @@ class LivenessService {
   final List<LivenessChallenge> _challenges = [];
   int _currentChallengeIndex = 0;
 
-  // Stability counters: requires holding the gesture for ~3-4 consecutive frames (300-400ms)
+  // Stability counters: requires holding the gesture for ~3 consecutive frames (300-400ms)
   int _stableFrames = 0;
   static const int _requiredStableFrames = 3;
 
@@ -89,12 +104,15 @@ class LivenessService {
   bool _blinkDetectedClosed = false;
   int? _lockedTrackingId;
 
+  List<LivenessChallenge> get allChallenges => List.unmodifiable(_challenges);
+
   LivenessChallenge get currentChallenge =>
       _challenges.isNotEmpty && _currentChallengeIndex < _challenges.length
           ? _challenges[_currentChallengeIndex]
           : LivenessChallenge.centerFace;
 
   int get currentStepNumber => _currentChallengeIndex + 1;
+  int get currentStepIndex => _currentChallengeIndex;
   int get totalSteps => _challenges.length;
 
   void startNewSession() {
@@ -104,19 +122,24 @@ class LivenessService {
     _blinkDetectedClosed = false;
     _lockedTrackingId = null;
 
-    // Step 1 is always Center Face (calibrates user)
+    final random = Random();
+
+    // Step 1: Always Center Face (calibrates user in oval)
     _challenges.add(LivenessChallenge.centerFace);
 
-    // Step 2 is ONE randomized dynamic action (Blink, Turn Left, Turn Right, or Look Up)
-    // 2 total steps is the industry sweet spot for fast, reliable mobile verification.
-    final dynamicOptions = [
+    // Step 2: Head Movement Challenge (Turn Right or Turn Left)
+    final headTurns = [
       LivenessChallenge.turnHeadRight,
       LivenessChallenge.turnHeadLeft,
+    ]..shuffle(random);
+    _challenges.add(headTurns.first);
+
+    // Step 3: Facial Action Challenge (Blink Eyes or Tilt Up)
+    final facialActions = [
       LivenessChallenge.blink,
       LivenessChallenge.lookUp,
-    ]..shuffle(Random());
-
-    _challenges.add(dynamicOptions.first);
+    ]..shuffle(random);
+    _challenges.add(facialActions.first);
   }
 
   void resetStability() {
@@ -193,7 +216,6 @@ class LivenessService {
         break;
 
       case LivenessChallenge.turnHeadLeft:
-        // Checking for left turn
         if (yaw < -16.0 || yaw > 16.0) {
           conditionMetThisFrame = true;
           progress = 1.0;
@@ -254,8 +276,10 @@ class LivenessService {
       final isDone = _currentChallengeIndex >= _challenges.length;
 
       return LivenessStepResult(
-        title: isDone ? 'Liveness Complete! ✓' : 'Step Passed! ✓',
-        instruction: isDone ? 'Hold still for final biometric capture' : 'Great! Getting next challenge...',
+        title: isDone ? 'All 3 Steps Passed! ✓' : 'Step Passed! ✓',
+        instruction: isDone
+            ? 'Hold still for final biometric capture'
+            : 'Great! Getting next challenge...',
         icon: Icons.check_circle,
         currentStepProgress: 1.0,
         isChallengePassed: true,

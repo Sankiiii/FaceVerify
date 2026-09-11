@@ -119,7 +119,7 @@ class _VerificationScreenState extends State<VerificationScreen> {
     });
 
     _controller!.startImageStream((CameraImage image) async {
-      // 1. Throttle frame rate: process 1 frame every 130ms (prevents UI flicker & CPU lock)
+      // 1. Throttle frame rate: process 1 frame every 130ms (prevents UI flicker & CPU load)
       final now = DateTime.now();
       if (now.difference(_lastFrameProcessedTime).inMilliseconds < 130) {
         return;
@@ -171,14 +171,14 @@ class _VerificationScreenState extends State<VerificationScreen> {
     });
 
     if (result.isSessionComplete) {
-      // All challenges complete! Transition to final capture
+      // All 3 challenges complete! Transition to final capture
       _sessionComplete = true;
       await Future.delayed(const Duration(milliseconds: 900));
       if (mounted) {
         _performFinalBiometricCapture();
       }
     } else {
-      // Step 1 passed -> hold success for 1.2 seconds so user clearly sees it
+      // Hold success for 1.2 seconds so user clearly sees they completed this step
       await Future.delayed(const Duration(milliseconds: 1200));
       if (!mounted || !_isStreaming) return;
 
@@ -503,6 +503,83 @@ class _VerificationScreenState extends State<VerificationScreen> {
     );
   }
 
+  Widget _buildStepIndicator() {
+    final challenges = _livenessService.allChallenges;
+    final currentIdx = _livenessService.currentStepIndex;
+
+    return Row(
+      children: List.generate(challenges.length, (index) {
+        final isDone = index < currentIdx;
+        final isCurrent = index == currentIdx;
+        final challenge = challenges[index];
+
+        return Expanded(
+          child: Row(
+            children: [
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+                  decoration: BoxDecoration(
+                    color: isDone
+                        ? Colors.green.withValues(alpha: 0.25)
+                        : (isCurrent
+                            ? Colors.cyanAccent.withValues(alpha: 0.2)
+                            : Colors.white.withValues(alpha: 0.05)),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: isDone
+                          ? Colors.greenAccent
+                          : (isCurrent ? Colors.cyanAccent : Colors.white12),
+                      width: isCurrent ? 1.5 : 1.0,
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        isDone
+                            ? Icons.check_circle
+                            : (isCurrent ? challenge.icon : Icons.circle_outlined),
+                        size: 13,
+                        color: isDone
+                            ? Colors.greenAccent
+                            : (isCurrent ? Colors.cyanAccent : Colors.white38),
+                      ),
+                      const SizedBox(width: 4),
+                      Flexible(
+                        child: Text(
+                          '${index + 1}. ${challenge.shortLabel}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
+                            color: isDone
+                                ? Colors.greenAccent
+                                : (isCurrent ? Colors.white : Colors.white38),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              if (index < challenges.length - 1)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 3),
+                  child: Icon(
+                    Icons.chevron_right,
+                    size: 13,
+                    color: isDone ? Colors.greenAccent : Colors.white24,
+                  ),
+                ),
+            ],
+          ),
+        );
+      }),
+    );
+  }
+
   void _resetAndRetry() {
     final frontCamera = widget.cameras.firstWhere(
       (c) => c.lensDirection == CameraLensDirection.front,
@@ -556,16 +633,16 @@ class _VerificationScreenState extends State<VerificationScreen> {
             ),
           ),
 
-          // 3. User-Friendly Prominent Challenge Card (HUD)
+          // 3. User-Friendly Prominent Challenge Card (HUD) with 3-Step Stepper
           Positioned(
-            top: 20,
-            left: 18,
-            right: 18,
+            top: 16,
+            left: 16,
+            right: 16,
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
               decoration: BoxDecoration(
-                color: const Color(0xFF141520).withValues(alpha: 0.92),
-                borderRadius: BorderRadius.circular(20),
+                color: const Color(0xFF141520).withValues(alpha: 0.94),
+                borderRadius: BorderRadius.circular(22),
                 border: Border.all(
                   color: _borderColor.withValues(alpha: 0.7),
                   width: 2.0,
@@ -573,28 +650,33 @@ class _VerificationScreenState extends State<VerificationScreen> {
                 boxShadow: [
                   BoxShadow(
                     color: Colors.black.withValues(alpha: 0.6),
-                    blurRadius: 16,
+                    blurRadius: 18,
                   ),
                 ],
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Step Indicator
+                  // Visual 3-Step Stepper Bar (1. Center > 2. Action > 3. Action)
+                  _buildStepIndicator(),
+
+                  const SizedBox(height: 12),
+
+                  // Step Badge & Warning
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
                         decoration: BoxDecoration(
                           color: _borderColor.withValues(alpha: 0.2),
-                          borderRadius: BorderRadius.circular(10),
+                          borderRadius: BorderRadius.circular(8),
                         ),
                         child: Text(
                           'STEP $stepNum OF $totalSteps',
                           style: TextStyle(
                             color: _borderColor,
-                            fontSize: 12,
+                            fontSize: 11,
                             fontWeight: FontWeight.bold,
                             letterSpacing: 0.8,
                           ),
@@ -605,23 +687,23 @@ class _VerificationScreenState extends State<VerificationScreen> {
                           _warning!,
                           style: const TextStyle(
                             color: Colors.orangeAccent,
-                            fontSize: 12,
+                            fontSize: 11,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
                     ],
                   ),
 
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 10),
 
                   // Large Action Icon
                   Icon(
                     _challengeIcon,
-                    size: 44,
+                    size: 42,
                     color: _borderColor,
                   ),
 
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 6),
 
                   // Big Action Title
                   Text(
@@ -629,7 +711,7 @@ class _VerificationScreenState extends State<VerificationScreen> {
                     textAlign: TextAlign.center,
                     style: const TextStyle(
                       color: Colors.white,
-                      fontSize: 20,
+                      fontSize: 19,
                       fontWeight: FontWeight.bold,
                     ),
                   ),
@@ -646,16 +728,16 @@ class _VerificationScreenState extends State<VerificationScreen> {
                     ),
                   ),
 
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 10),
 
-                  // Active Progress Bar
+                  // Active Hold Progress Bar
                   ClipRRect(
                     borderRadius: BorderRadius.circular(6),
                     child: LinearProgressIndicator(
                       value: _stepProgress,
                       backgroundColor: Colors.white12,
                       valueColor: AlwaysStoppedAnimation<Color>(_borderColor),
-                      minHeight: 6,
+                      minHeight: 5,
                     ),
                   ),
                 ],
